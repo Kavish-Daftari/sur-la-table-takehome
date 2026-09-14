@@ -46,22 +46,48 @@ and see raw JSON responses.
 
 Add to your Claude Desktop config
 (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS,
-`%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+`%APPDATA%\Claude\claude_desktop_config.json` on Windows). Open it via the
+app itself — **Settings → Developer → Edit Config** — rather than guessing
+the path by hand, since it's the most reliable way to find the exact file
+your installed build reads.
+
+If the file already has other keys in it (app preferences, etc.), just add
+`mcpServers` as a new top-level key alongside them — don't replace anything
+else in the file:
 
 ```json
 {
   "mcpServers": {
     "country-analytics": {
       "command": "/absolute/path/to/venv/bin/python3",
-      "args": ["-m", "src.server"],
-      "cwd": "/absolute/path/to/sur-la-table-takehome"
+      "args": [
+        "-u",
+        "-c",
+        "import sys; sys.path.insert(0, '/absolute/path/to/sur-la-table-takehome'); import runpy; runpy.run_module('src.server', run_name='__main__')"
+      ]
     }
   }
 }
 ```
 
-Restart Claude Desktop. You should see "country-analytics" under the 🔌
-connectors icon with 7 tools available. Then ask things like:
+**Why this launch command, not the simpler `-m src.server` you'd expect:**
+some Claude Desktop builds don't reliably `chdir` into the `cwd` you specify
+before launching the server process, which breaks `-m src.server`'s package
+resolution (`ModuleNotFoundError: No module named 'src'`). Running
+`server.py` directly as a script path avoids that but breaks its internal
+relative imports (`from . import analytics, clients`) instead. The `-c` /
+`runpy.run_module` form manually adds the project root to `sys.path` and then
+loads `src.server` exactly the way `-m` would, so it works regardless of
+what working directory the process actually launches in. The `-u` flag
+forces unbuffered stdout — without it, JSON-RPC messages can sit in Python's
+output buffer when stdout is piped (as Claude Desktop does) instead of a
+terminal, and the connection looks "disconnected" even though the process is
+alive. If you hit either error anyway, `~/Library/Logs/Claude/mcp-server-country-analytics.log`
+(macOS) will show the exact traceback.
+
+Restart Claude Desktop fully (Cmd+Q / quit from the tray, not just closing
+the window). You should see "country-analytics" under Settings → Developer
+or the connectors list, with 7 tools available. Then ask things like:
 
 > "What was France's GDP in 2022 in US dollars?"
 > "What's Europe's total GDP in euros, using the Dec 30 2022 rate?"
@@ -82,6 +108,16 @@ connectors icon with 7 tools available. Then ask things like:
 All of `continent`, `year`, `currency`, `top_n`, `fx_date`, and region
 membership (`include_iso2`) are caller-supplied parameters — nothing is
 hardcoded to Europe or to one year.
+
+## Performance
+
+`region_total` and `rank_countries` need one World Bank indicator call per
+country (two per country for per-capita ranking). These are fetched
+**concurrently** through a bounded thread pool (10 requests at a time —
+bounded to stay a reasonable load on a free public API, not unlimited).
+Confirmed live: a per-capita ranking across Europe's ~48 countries (up to 96
+underlying calls) completes in well under 30 seconds. An earlier sequential
+version of this took 1-3+ minutes for the same query.
 
 ## Repo layout
 
